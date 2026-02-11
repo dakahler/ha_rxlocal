@@ -1,0 +1,35 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "RxLocal",
+        "description": "Enter your RxLocal patient portal credentials.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to RxLocal",
+      "invalid_auth": "Invalid email or password",
+      "unknown": "An unexpected error occurred"
+    },
+    "abort": {
+      "already_configured": "This account is already configured"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "prescription_count": {
+        "name": "Prescriptions"
+      },
+      "pending_refills": {
+        "name": "Pending Refills"
+      },
+      "pharmacy": {
+        "name": "Pharmacy"
+      }
+    }
+  }
+}
