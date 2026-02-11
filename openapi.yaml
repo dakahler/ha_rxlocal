@@ -1,0 +1,869 @@
+openapi: 3.1.0
+info:
+  title: RxLocal Patient Portal API
+  description: |
+    Unofficial API specification for the RxLocal patient portal by RedSail Technologies / PioneerRx.
+    Reverse-engineered from the patient portal SPA at patient.rxlocal.com.
+
+    ## Authentication Flow
+
+    Authentication is a three-step process:
+
+    1. **Keycloak password grant** — Obtain Keycloak access + refresh tokens via the
+       OIDC token endpoint at `auth.redsailapp.com`.
+    2. **RxLocal token exchange** — Exchange the Keycloak access token for an RxLocal
+       API JWT via `GET /api/auth/rxlocal-token`. Requires the `portalid` header set
+       to the app portal ID. The returned JWT contains user profile claims but its
+       `sub` field is the **GlobalUserId**, not the pharmacy-specific patient ID.
+    3. **Account info lookup** — Call `GET /api/account/getuserinfo` to obtain the
+       `rxLocalPatientID`, which is different from the JWT `sub` (GlobalUserId).
+       This ID is required for all patient data queries.
+
+    ## Key Concepts
+
+    - **GlobalUserId** — The user's global identity (JWT `sub`). Used in the
+      `rxlocaluserid` header.
+    - **rxLocalPatientID** — The pharmacy-specific patient ID. Used as both the
+      patient identifier and `groupOwnerID` in most data endpoints.
+    - **dataExchangeIdentifier (DEI)** — A location-specific identifier for a
+      pharmacy. Returned in account info and pharmacy location data.
+    - **portalid** — Required header on all API requests. Must be the app portal ID.
+
+    ## Response Envelope
+
+    Many endpoints wrap responses in `{ "serviceResult": 1, "data": <payload> }`.
+    The actual data is in the `data` field.
+  version: 1.0.0
+  contact:
+    name: Unofficial / Community
+
+servers:
+  - url: https://patient.rxlocal.com/api
+    description: RxLocal Patient Portal API
+  - url: https://auth.redsailapp.com/auth/realms/rxlocal/protocol/openid-connect
+    description: Keycloak OIDC (authentication only)
+
+tags:
+  - name: Authentication
+    description: Keycloak OIDC and RxLocal token exchange
+  - name: Account
+    description: User account and profile information
+  - name: Medications
+    description: Patient medication data
+  - name: Pharmacies
+    description: Linked pharmacy locations
+  - name: Vaccines
+    description: Patient immunization records
+  - name: Refills
+    description: Prescription refill requests
+
+components:
+  securitySchemes:
+    keycloakBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Keycloak access token (used only for token exchange)
+    rxLocalBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: RxLocal API JWT (used for all data endpoints)
+
+  parameters:
+    portalId:
+      name: portalid
+      in: header
+      required: true
+      description: App portal ID. Must be `3A93FBAD-EE1D-41B5-9F59-E7115602E91E`.
+      schema:
+        type: string
+        default: 3A93FBAD-EE1D-41B5-9F59-E7115602E91E
+    rxLocalUserId:
+      name: rxlocaluserid
+      in: header
+      required: false
+      description: The user's GlobalUserId (JWT `sub`). Required by some endpoints.
+      schema:
+        type: string
+        format: uuid
+    mobileSecret:
+      name: rxlocal_mobile_ss
+      in: header
+      required: false
+      description: Mobile secret header required by some endpoints.
+      schema:
+        type: string
+        default: "%rX60cAL5HA466DS00C2E1%"
+
+  schemas:
+    KeycloakTokenResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          description: Keycloak JWT access token
+        refresh_token:
+          type: string
+          description: Keycloak refresh token (rotates on each use)
+        expires_in:
+          type: integer
+          description: Token lifetime in seconds
+          example: 300
+        token_type:
+          type: string
+          example: Bearer
+        scope:
+          type: string
+          example: openid profile email offline_access
+
+    RxLocalTokenExchangeResponse:
+      type: object
+      properties:
+        serviceResult:
+          type: integer
+          example: 1
+        data:
+          type: object
+          properties:
+            access_token:
+              type: string
+              description: RxLocal API JWT
+            refresh_token:
+              type: string
+              description: RxLocal-specific refresh token
+            isUserAbsentLocally:
+              type: boolean
+              description: Whether the user exists in the local system
+        succeeded:
+          type: boolean
+
+    RxLocalJwtClaims:
+      type: object
+      description: Claims decoded from the RxLocal API JWT
+      properties:
+        sub:
+          type: string
+          format: uuid
+          description: GlobalUserId (NOT rxLocalPatientID)
+        nameid:
+          type: string
+          format: uuid
+        unique_name:
+          type: string
+          description: Username (email)
+        given_name:
+          type: string
+        family_name:
+          type: string
+        email:
+          type: string
+          format: email
+        mobile_phone:
+          type: string
+        preferred_username:
+          type: string
+        role:
+          type: string
+          example: Patient
+        GlobalUserId:
+          type: string
+          format: uuid
+          description: Same as sub
+        TestUserFlag:
+          type: integer
+        DemoUserFlag:
+          type: integer
+        TermsAcceptanceRequired:
+          type: string
+          enum: ["True", "False"]
+        SMSTermsAcceptanceRequired:
+          type: string
+          enum: ["True", "False"]
+        aud:
+          type: array
+          items:
+            type: string
+          example: ["rxlocal-api", "kanvo-api"]
+        iss:
+          type: string
+          example: https://patient.rxlocal.com
+
+    AccountInfo:
+      type: object
+      properties:
+        globalUserID:
+          type: string
+          format: uuid
+          description: The user's global identity
+        userName:
+          type: string
+          format: email
+        firstName:
+          type: string
+        lastName:
+          type: string
+        emailAddress:
+          type: string
+          format: email
+        smsPhone:
+          type: string
+        passwordExpiredOn:
+          type: string
+          format: date-time
+        passwordExpired:
+          type: boolean
+        isTestUser:
+          type: boolean
+        isDemoUser:
+          type: boolean
+        isPharmacyFinderUser:
+          type: boolean
+        accountType:
+          type: integer
+        entityStatus:
+          type: integer
+        rxLocalPatientID:
+          type: string
+          format: uuid
+          description: |
+            The pharmacy-specific patient ID. This is different from globalUserID
+            and is required for all patient data API calls.
+        primaryPersonID:
+          type: string
+          format: uuid
+        primaryDataExchangeIdentifier:
+          type: string
+          format: uuid
+          description: DEI for the primary linked pharmacy location
+        primaryAuthenticationLocationID:
+          type: string
+          format: uuid
+        roles:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: integer
+              name:
+                type: string
+        termsAcceptanceRequired:
+          type: boolean
+        smsTermsAcceptanceRequired:
+          type: boolean
+        lastLoginOn:
+          type: string
+          format: date-time
+        lastSessionLoginOn:
+          type: string
+          format: date-time
+        userHasLoggedIn:
+          type: integer
+
+    Medication:
+      type: object
+      properties:
+        pharmacyName:
+          type: string
+          example: Main Street Pharmacy
+        rxLocalPatientID:
+          type: string
+          format: uuid
+        rxID:
+          type: string
+          format: uuid
+          description: Unique identifier for this prescription record
+        rxNumber:
+          type: integer
+          description: Prescription number
+          example: 1234567
+        dispensedAs:
+          type: string
+          description: Drug name as dispensed
+          example: Amoxicillin 500mg Capsule
+        writtenAs:
+          type: string
+          description: Drug name as written on the prescription
+        displayName:
+          type: string
+        dateWritten:
+          type: string
+          format: date-time
+        lastSoldOn:
+          type: string
+          format: date-time
+          description: Date the prescription was last filled/sold
+        completedDate:
+          type: string
+          format: date-time
+        expirationDate:
+          type: string
+          format: date-time
+        refillsRemaining:
+          type: integer
+          example: 3
+        quantityRemaining:
+          type: number
+          format: float
+          example: 160.0
+        daysSupply:
+          type: integer
+          example: 30
+        refillStatusKey:
+          type: integer
+        refillRequestStatus:
+          type: string
+          description: Human-readable refill status
+          enum: [Available, Too Soon, No Refills, Expired, Transferred]
+          example: Available
+        refillRequestSortOrder:
+          type: integer
+        canRequestRefill:
+          type: boolean
+        requiresRenewal:
+          type: boolean
+        substitutionMade:
+          type: boolean
+        refillsDueDaysBefore:
+          type: integer
+        refillsDuePercent:
+          type: integer
+        expireInactiveMinutes:
+          type: integer
+        rxStatusType:
+          type: string
+          example: Refills Remaining
+        patientStatus:
+          type: integer
+        isSystemActive:
+          type: boolean
+
+    PharmacyLocation:
+      type: object
+      properties:
+        dataExchangeIdentifier:
+          type: string
+          format: uuid
+          description: Unique identifier for this pharmacy location
+        rxLocalPatientId:
+          type: string
+          format: uuid
+        authenticationLocationID:
+          type: string
+          format: uuid
+        patientPersonID:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: Main Street Pharmacy
+        addressLine1:
+          type: string
+          example: 123 Main St
+        city:
+          type: string
+          example: Anytown
+        state:
+          type: string
+          example: WA
+        zip:
+          type: string
+          example: "12345"
+        phone:
+          type: string
+          example: "5551234567"
+        email:
+          type: string
+          format: email
+        smsPhone:
+          type: string
+        timeZone:
+          type: object
+          properties:
+            timeZoneID:
+              type: integer
+            timeZoneName:
+              type: string
+            utcOffset:
+              type: integer
+            label:
+              type: string
+        respectDST:
+          type: boolean
+        hours:
+          type: array
+          items:
+            type: object
+            properties:
+              daysApplicable:
+                type: string
+                example: Monday - Friday
+              hoursForDays:
+                type: string
+                example: "9:00 AM - 7:00 PM"
+
+    Vaccine:
+      type: object
+      properties:
+        name:
+          type: string
+          example: "Influenza, recombinant, trivalent, PF (PMC)"
+        administeredOn:
+          type: string
+          format: date-time
+        source:
+          type: string
+          example: State Immunization Registry
+
+    RxLocalPatientInfo:
+      type: object
+      properties:
+        dataExchangeIdentifier:
+          type: string
+          format: uuid
+        globalUserID:
+          type: string
+          format: uuid
+        patientID:
+          type: string
+          format: uuid
+
+    ServiceResultEnvelope:
+      type: object
+      description: Standard response envelope used by many endpoints
+      properties:
+        serviceResult:
+          type: integer
+          example: 1
+        data:
+          description: The actual response payload
+        succeeded:
+          type: boolean
+
+paths:
+  /token:
+    servers:
+      - url: https://auth.redsailapp.com/auth/realms/rxlocal/protocol/openid-connect
+    post:
+      tags: [Authentication]
+      summary: Keycloak token endpoint
+      description: |
+        Standard OIDC token endpoint. Supports `password` and `refresh_token` grant types.
+        The client is a public client (no client_secret required).
+        Refresh tokens rotate on each use.
+      operationId: keycloakToken
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type, client_id]
+              properties:
+                grant_type:
+                  type: string
+                  enum: [password, refresh_token]
+                client_id:
+                  type: string
+                  default: patient-portal
+                username:
+                  type: string
+                  description: Required for password grant
+                password:
+                  type: string
+                  description: Required for password grant
+                refresh_token:
+                  type: string
+                  description: Required for refresh_token grant
+                scope:
+                  type: string
+                  default: openid profile email offline_access
+            examples:
+              passwordGrant:
+                summary: Password grant
+                value:
+                  grant_type: password
+                  client_id: patient-portal
+                  username: user@example.com
+                  password: mypassword
+                  scope: openid profile email offline_access
+              refreshGrant:
+                summary: Refresh token grant
+                value:
+                  grant_type: refresh_token
+                  client_id: patient-portal
+                  refresh_token: <refresh_token>
+      responses:
+        "200":
+          description: Token issued successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KeycloakTokenResponse"
+        "400":
+          description: Invalid grant (bad credentials or expired refresh token)
+        "401":
+          description: Unauthorized
+
+  /auth/rxlocal-token:
+    get:
+      tags: [Authentication]
+      summary: Exchange Keycloak token for RxLocal API token
+      description: |
+        Exchanges a Keycloak access token for an RxLocal API JWT.
+        The returned JWT contains user profile claims and is used for all
+        subsequent API calls. The JWT `sub` claim is the GlobalUserId.
+
+        **Important:** The `portalid` header must be set to the app portal ID
+        (`3A93FBAD-EE1D-41B5-9F59-E7115602E91E`). Using the patient portal ID
+        will result in a 401.
+      operationId: exchangeToken
+      security:
+        - keycloakBearer: []
+      parameters:
+        - $ref: "#/components/parameters/portalId"
+      responses:
+        "200":
+          description: Token exchange successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RxLocalTokenExchangeResponse"
+        "401":
+          description: Invalid or expired Keycloak token, or wrong portalid
+
+  /account/getuserinfo:
+    get:
+      tags: [Account]
+      summary: Get user account info
+      description: |
+        Returns the authenticated user's account information, including the
+        critical `rxLocalPatientID` which is different from the JWT `sub`
+        (GlobalUserId). This endpoint must be called after token exchange
+        to discover the correct patient ID for data queries.
+      operationId: getUserInfo
+      security:
+        - rxLocalBearer: []
+      parameters:
+        - $ref: "#/components/parameters/portalId"
+      responses:
+        "200":
+          description: Account info retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountInfo"
+        "401":
+          description: Invalid or expired RxLocal token
+
+  /account/user/{globalUserId}:
+    get:
+      tags: [Account]
+      summary: Get user global ID info
+      operationId: getUserGlobalId
+      security:
+        - rxLocalBearer: []
+      parameters:
+        - $ref: "#/components/parameters/portalId"
+        - name: globalUserId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: User info retrieved
+        "404":
+          description: User not found
+
+  /patients/getrxlocalpatientmedications:
+    post:
+      tags: [Medications]
+      summary: Get patient medications
+      description: |
+        Returns a list of the patient's active (or all) medications.
+        Both `rxLocalPatientID` and `groupOwnerID` must be set to the
+        pharmacy-specific patient ID obtained from `/account/getuserinfo`.
+      operationId: getPatientMedications
+      security:
+        - rxLocalBearer: []
+      parameters:
+        - $ref: "#/components/parameters/portalId"
+        - $ref: "#/components/parameters/rxLocalUserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rxLocalPatientID, groupOwnerID]
+              properties:
+                rxLocalPatientID:
+                  type: string
+                  format: uuid
+                groupOwnerID:
+                  type: string
+                  format: uuid
+                  description: Set to the same value as rxLocalPatientID
+                active:
+                  type: boolean
+                  description: Filter to active medications only
+                  default: true
+                startDate:
+                  type: string
+                  format: date
+                  description: Optional start date filter (MM-DD-YYYY)
+                endDate:
+                  type: string
+                  format: date
+                  description: Optional end date filter (MM-DD-YYYY)
+      responses:
+        "200":
+          description: Medications retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Medication"
+        "403":
+          description: Unauthorized to access requested data (wrong patient ID)
+
+  /patient/group/owner/{rxLocalPatientID}/locations:
+    get:
+      tags: [Pharmacies]
+      summary: Get patient's linked pharmacy locations
+      description: |
+        Returns the pharmacy locations linked to the patient. May return
+        duplicates which should be deduplicated by `dataExchangeIdentifier`.
+      operationId: getPatientGroupLocations
+      security:
+        - rxLocalBearer: []
+      parameters:
+        - $ref: "#/components/parameters/portalId"
+        - name: rxLocalPatientID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Pharmacy locations retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  serviceResult:
+                    type: integer
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PharmacyLocation"
+        "403":
+          description: Unauthorized to access requested data
+
+  /patients/GetPatientPharmacies:
+    get:
+      tags: [Pharmacies]
+      summary: Get patient pharmacies (alternative)
+      description: |
+        Alternative endpoint for retrieving linked pharmacies.
+        Requires both `GroupOwnerID` and `RxLocalPatientId` query parameters
+        set to the rxLocalPatientID. Without `GroupOwnerID`, returns 403.
+      operationId: getPatientPharmacies
+      security:
+        - rxLocalBearer: []
+      parameters:
+        - $ref: "#/components/parameters/portalId"
+        - $ref: "#/components/parameters/rxLocalUserId"
+        - name: RxLocalPatientId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: GroupOwnerID
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+            description: Must be set to rxLocalPatientID
+      responses:
+        "200":
+          description: Pharmacies retrieved
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PharmacyLocation"
+        "403":
+          description: Unauthorized (missing GroupOwnerID)
+
+  /patients/{rxLocalPatientID}/patient:
+    get:
+      tags: [Account]
+      summary: Get RxLocal patient info
+      description: |
+        Returns basic patient info including the dataExchangeIdentifier
+        for the primary pharmacy location.
+      operationId: getRxLocalPatient
+      security:
+        - rxLocalBearer: []
+      parameters:
+        - $ref: "#/components/parameters/portalId"
+        - $ref: "#/components/parameters/mobileSecret"
+        - name: rxLocalPatientID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Patient info retrieved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RxLocalPatientInfo"
+
+  /patients/{rxLocalPatientID}/vaccines:
+    get:
+      tags: [Vaccines]
+      summary: Get patient vaccines
+      description: Returns the patient's immunization records.
+      operationId: getPatientVaccines
+      security:
+        - rxLocalBearer: []
+      parameters:
+        - $ref: "#/components/parameters/portalId"
+        - name: rxLocalPatientID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Vaccines retrieved
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Vaccine"
+
+  /patients/{rxLocalPatientID}/Demographics:
+    get:
+      tags: [Account]
+      summary: Get patient demographics
+      description: |
+        Returns patient demographic data. May return 403 depending on
+        authorization context.
+      operationId: getPatientDemographics
+      security:
+        - rxLocalBearer: []
+      parameters:
+        - $ref: "#/components/parameters/portalId"
+        - name: rxLocalPatientID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: rxLocalPatientID
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Some calls pass this as a query param as well
+      responses:
+        "200":
+          description: Demographics retrieved
+        "403":
+          description: Unauthorized
+
+  /refill/{groupOwnerID}/v2:
+    get:
+      tags: [Refills]
+      summary: Get patient refill requests
+      description: |
+        Returns pending and historical refill requests. The `groupOwnerID`
+        path parameter is the rxLocalPatientID. The `locationDEI` query
+        parameter is the `primaryDataExchangeIdentifier` from account info.
+      operationId: getPatientRefills
+      security:
+        - rxLocalBearer: []
+      parameters:
+        - $ref: "#/components/parameters/portalId"
+        - $ref: "#/components/parameters/rxLocalUserId"
+        - name: groupOwnerID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The rxLocalPatientID
+        - name: rxLocalPatientID
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: locationDEI
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: The primaryDataExchangeIdentifier from account info
+      responses:
+        "200":
+          description: Refills retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  serviceResult:
+                    type: integer
+                  data:
+                    type: object
+                    properties:
+                      refills:
+                        type: array
+                        items:
+                          type: object
+        "403":
+          description: Unauthorized
+
+  /MedSync/{rxLocalPatientID}/PatientMaskedName:
+    get:
+      tags: [Account]
+      summary: Get patient masked name from MedSync
+      description: Returns the patient's masked name. May return empty body.
+      operationId: getMedSyncPatientMaskedName
+      security:
+        - rxLocalBearer: []
+      parameters:
+        - $ref: "#/components/parameters/portalId"
+        - $ref: "#/components/parameters/mobileSecret"
+        - name: rxLocalPatientID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Name retrieved (may be empty string)
+          content:
+            text/plain:
+              schema:
+                type: string
